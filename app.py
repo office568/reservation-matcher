@@ -10,7 +10,9 @@ import time
 TARGET_GSHEET_HEADER = "予約番号"
 TARGET_GSHEET_PRICE = "金額"
 CSV_MATCH_HEADERS = ["Confirmation code", "Reference code", "Reference number"]
-CSV_PRICE_HEADERS = ["Amount", "Gross earnings", "Paid out", "Gross amount", "Transaction amount", "Payable amount"]
+
+# CRITICAL FIX: Put "Gross earnings" and "Gross amount" first so the app prioritizes total revenue
+CSV_PRICE_HEADERS = ["Gross earnings", "Gross amount", "Amount", "Transaction amount", "Payable amount", "Paid out"]
 
 DEFAULT_LINKS = [
     "https://docs.google.com/spreadsheets/d/1iQZTAYk8mq6j_1H4-u8TO4SZZX61HKULtv2lvLrUf6w/edit",
@@ -20,7 +22,7 @@ DEFAULT_LINKS = [
     "https://docs.google.com/spreadsheets/d/1PpaSECqXI9YC2Xax7o5G985hk2MuSkF9SWIlrf4WTRI/edit",
     "https://docs.google.com/spreadsheets/d/1rvw82CBs4BTE2iUKwjMkIVMODLT_nyXIsKv1TIFR6zU/edit",
     "https://docs.google.com/spreadsheets/d/1qgJj_7qL68SbOdNVRXqkHQx7gjFPqE5RcbsXJEPhY0Q/edit",
-    "PASTE_YOUR_8TH_NEW_PROPERTY_LINK_HERE" # <-- Ensure your 8th link is placed here
+    "PASTE_YOUR_8TH_NEW_PROPERTY_LINK_HERE" # <-- Remember to paste your 8th link here if needed
 ]
 
 def get_gspread_client():
@@ -95,8 +97,6 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                 st.error("No valid transaction fields mapped from layout.")
             else:
                 st.success(f"Mapped {len(csv_codes)} active validation targets.")
-                if not is_csv_mode:
-                    st.warning("⚠️ Text-only source (PDF) layout detected. Code presence validation active; price verification skipped.")
                 st.divider()
 
                 globally_found_codes = set()
