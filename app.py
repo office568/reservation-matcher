@@ -11,9 +11,10 @@ TARGET_GSHEET_HEADER = "予約番号"
 TARGET_GSHEET_PRICE = "金額"
 CSV_MATCH_HEADERS = ["Confirmation code", "Reference code", "Reference number"]
 
-# CRITICAL FIX: Put "Gross earnings" and "Gross amount" first so the app prioritizes total revenue
+# Prioritizes total revenue columns to ensure clean matching with your Airbnb exports
 CSV_PRICE_HEADERS = ["Gross earnings", "Gross amount", "Amount", "Transaction amount", "Payable amount", "Paid out"]
 
+# Your Complete List of 10 Property Spreadsheet Links
 DEFAULT_LINKS = [
     "https://docs.google.com/spreadsheets/d/1iQZTAYk8mq6j_1H4-u8TO4SZZX61HKULtv2lvLrUf6w/edit",
     "https://docs.google.com/spreadsheets/d/1eD0C4rFpHJDye5lDuS3kIkse2g9KV3qsjQW1NHyn1ug/edit",
@@ -22,7 +23,9 @@ DEFAULT_LINKS = [
     "https://docs.google.com/spreadsheets/d/1PpaSECqXI9YC2Xax7o5G985hk2MuSkF9SWIlrf4WTRI/edit",
     "https://docs.google.com/spreadsheets/d/1rvw82CBs4BTE2iUKwjMkIVMODLT_nyXIsKv1TIFR6zU/edit",
     "https://docs.google.com/spreadsheets/d/1qgJj_7qL68SbOdNVRXqkHQx7gjFPqE5RcbsXJEPhY0Q/edit",
-    "PASTE_YOUR_8TH_NEW_PROPERTY_LINK_HERE" # <-- Remember to paste your 8th link here if needed
+    "https://docs.google.com/spreadsheets/d/1b2WPv0ybZc85_CyuyT7KqA9CQPVMvZ-6QB3u2g8hmNY/edit",
+    "https://docs.google.com/spreadsheets/d/1p9datgPRonSfbsIyRY0g7tNfKYfnsKWdBaJQSNWV2ng/edit",
+    "https://docs.google.com/spreadsheets/d/1Ms-S5qgkaGPv5iUvJZqMYcEUbpUTsn859IYlY8p_W18/edit"
 ]
 
 def get_gspread_client():
@@ -49,14 +52,13 @@ def extract_data_from_file(uploaded_file):
         except:
             df = pd.read_csv(uploaded_file, encoding='cp932')
         
-        # Dynamically find header paths
         type_col = next((col for col in df.columns if "type" in col.lower()), None)
         code_col = next((col for col in CSV_MATCH_HEADERS if col in df.columns), None)
         price_col = next((col for col in CSV_PRICE_HEADERS if col in df.columns), None)
         
         if code_col and price_col:
             for _, row in df.iterrows():
-                # Filter strictly for standard bookings to ignore payout distributions/adjustments
+                # Filter strictly for standard bookings to ignore payouts/adjustments
                 if type_col and str(row[type_col]).strip() != "Reservation":
                     continue
                     
@@ -78,7 +80,7 @@ def extract_data_from_file(uploaded_file):
 # --- UI SETUP ---
 st.set_page_config(page_title="Seirai Auto-Matcher", page_icon="🟢", layout="wide")
 st.title("🟢 Seirai Group: Multi-Property Reconciliation Agent")
-st.markdown(f"Automated verification engine synced with **{len(DEFAULT_LINKS)}** properties.")
+st.markdown(f"Automated verification engine synced with **{len(DEFAULT_LINKS)}** live properties.")
 
 uploaded_file = st.file_uploader("Upload your transaction CSV record", type=["csv", "pdf"])
 
@@ -114,7 +116,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                         st.subheader(f"📂 Spreadsheet: {sh.title}")
                         
                         for worksheet in sh.worksheets():
-                            time.sleep(1.2) # Active Anti-Throttling Guard
+                            time.sleep(1.2) # Anti-Throttling Guard for the 429 Quota Error
                             data = worksheet.get_all_values()
                             if not data: continue
                             
