@@ -116,13 +116,15 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                         st.subheader(f"📂 Spreadsheet: {sh.title}")
                         
                         for worksheet in sh.worksheets():
-                            time.sleep(1.2) # Anti-Throttling Guard for the 429 Quota Error
+                            time.sleep(1.2) # Anti-Throttling Guard
                             data = worksheet.get_all_values()
                             if not data: continue
                             
                             headers = [str(h).strip() for h in data[0]]
-                            col_idx = next((idx for idx, h in enumerate(headers) if TARGET_GSHEET_HEADER in h), None)
-                            price_idx = next((idx for idx, h in enumerate(headers) if TARGET_GSHEET_PRICE in h), None)
+                            
+                            # CRITICAL FIX: Changed from 'in h' to strict equality '== h' to prevent cross-column leaks
+                            col_idx = next((idx for idx, h in enumerate(headers) if h == TARGET_GSHEET_HEADER), None)
+                            price_idx = next((idx for idx, h in enumerate(headers) if h == TARGET_GSHEET_PRICE), None)
                             
                             if col_idx is None: continue 
 
@@ -131,13 +133,15 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                             tab_red_mismatches = 0
                             
                             for row_num, row_data in enumerate(data[1:], start=2):
+                                # Ensure row data exists for the selected index path safely
+                                if len(row_data) <= col_idx: continue
                                 gsheet_val = str(row_data[col_idx]).strip().upper()
                                 
                                 if gsheet_val in csv_codes:
                                     globally_found_codes.add(gsheet_val)
                                     
                                     # Perform cross-verification
-                                    if is_csv_mode and price_idx is not None:
+                                    if is_csv_mode and price_idx is not None and len(row_data) > price_idx:
                                         csv_price = parsed_file_package["data"][gsheet_val]
                                         gsheet_price = clean_numeric_string(row_data[price_idx])
                                         
