@@ -10,8 +10,6 @@ import time
 TARGET_GSHEET_HEADER = "予約番号"
 TARGET_GSHEET_PRICE = "金額"
 CSV_MATCH_HEADERS = ["Confirmation code", "Reference code", "Reference number"]
-
-# Prioritizes total revenue columns to ensure clean matching with your Airbnb exports
 CSV_PRICE_HEADERS = ["Gross earnings", "Gross amount", "Amount", "Transaction amount", "Payable amount", "Paid out"]
 
 # Your Complete List of 10 Property Spreadsheet Links
@@ -29,11 +27,9 @@ DEFAULT_LINKS = [
 ]
 
 def get_gspread_client():
-    """Authenticates using Streamlit Secrets."""
     return gspread.service_account_from_dict(st.secrets["gcp_service_account"])
 
 def clean_numeric_string(val):
-    """Converts raw currency or object strings into flat integers for clean matching."""
     if pd.isna(val) or val is None or str(val).strip() == "" or str(val).strip() == "-":
         return None
     cleaned = re.sub(r'[^\d\.\-]', '', str(val))
@@ -43,9 +39,7 @@ def clean_numeric_string(val):
         return None
 
 def extract_data_from_file(uploaded_file):
-    """Extracts a clean dictionary mapping {RESERVATION_CODE: PRICE_INT} from CSV or PDF."""
     file_data = {"type": "csv", "data": {}}
-    
     if uploaded_file.name.endswith('.csv'):
         try:
             df = pd.read_csv(uploaded_file)
@@ -58,10 +52,8 @@ def extract_data_from_file(uploaded_file):
         
         if code_col and price_col:
             for _, row in df.iterrows():
-                # Filter strictly for standard bookings to ignore payouts/adjustments
                 if type_col and str(row[type_col]).strip() != "Reservation":
                     continue
-                    
                 code = str(row[code_col]).strip().upper()
                 if pd.isna(row[code_col]) or code == "NAN" or not code or code == "-":
                     continue
@@ -74,13 +66,11 @@ def extract_data_from_file(uploaded_file):
         with pdfplumber.open(uploaded_file) as pdf:
             text = " ".join([page.extract_text() for page in pdf.pages if page.extract_text()])
         file_data["data"] = set(re.findall(r'\b[A-Z0-9]{7,15}\b', text.upper()))
-        
     return file_data
 
 # --- UI SETUP ---
 st.set_page_config(page_title="Seirai Auto-Matcher", page_icon="🟢", layout="wide")
-st.title("🟢 Seirai Group: Multi-Property Reconciliation Agent")
-st.markdown(f"Automated verification engine synced with **{len(DEFAULT_LINKS)}** live properties.")
+st.title("🟢 Seirai Group: Advanced Anti-Leak Reconciliation Agent")
 
 uploaded_file = st.file_uploader("Upload your transaction CSV record", type=["csv", "pdf"])
 
@@ -92,7 +82,6 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
             client = get_gspread_client()
             parsed_file_package = extract_data_from_file(uploaded_file)
             is_csv_mode = parsed_file_package["type"] == "csv"
-            
             csv_codes = set(parsed_file_package["data"].keys()) if is_csv_mode else parsed_file_package["data"]
 
             if not csv_codes:
@@ -105,8 +94,8 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                 all_price_mismatches = []
                 progress_bar = st.progress(0)
                 
-                green_fmt = cellFormat(backgroundColor=color(0.82, 0.93, 0.85)) # Perfect match color
-                red_fmt = cellFormat(backgroundColor=color(0.97, 0.84, 0.85))   # Soft discrepancy red
+                green_fmt = cellFormat(backgroundColor=color(0.82, 0.93, 0.85))
+                red_fmt = cellFormat(backgroundColor=color(0.97, 0.84, 0.85))
                 
                 for index, link in enumerate(DEFAULT_LINKS):
                     if "docs.google.com" not in link: continue
@@ -116,15 +105,25 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                         st.subheader(f"📂 Spreadsheet: {sh.title}")
                         
                         for worksheet in sh.worksheets():
-                            time.sleep(1.2) # Anti-Throttling Guard
+                            time.sleep(1.2) # API Rate Limit protection
                             data = worksheet.get_all_values()
-                            if not data: continue
+                            if not data or len(data) < 1: continue
                             
-                            headers = [str(h).strip() for h in data[0]]
+                            # UPGRADE 1: Dynamic Row Scanner to handle structural shifting
+                            col_idx = None
+                            price_idx = None
+                            guest_idx = None
+                            header_row_num = 0
                             
-                            # CRITICAL FIX: Changed from 'in h' to strict equality '== h' to prevent cross-column leaks
-                            col_idx = next((idx for idx, h in enumerate(headers) if h == TARGET_GSHEET_HEADER), None)
-                            price_idx = next((idx for idx, h in enumerate(headers) if h == TARGET_GSHEET_PRICE), None)
+                            for r_num in range(min(6, len(data))):
+                                row_cells = [str(c).strip() for c in data[r_num]]
+                                if any(c == TARGET_GSHEET_HEADER for c in row_cells):
+                                    col_idx = next(i for i, c in enumerate(row_cells) if c == TARGET_GSHEET_HEADER)
+                                    header_row_num = r_num + 1
+                                    price_idx = next((i for i, c in enumerate(row_cells) if c == TARGET_GSHEET_PRICE), None)
+                                    # Secondary tracker to extract Guest Name for validation proofing
+                                    guest_idx = next((i for i, c in enumerate(row_cells) if any(g in c for g in ["宿泊者", "ゲスト", "名前", "Guest", "Name"])), None)
+                                    break
                             
                             if col_idx is None: continue 
 
@@ -132,38 +131,39 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                             tab_green_matches = 0
                             tab_red_mismatches = 0
                             
-                            for row_num, row_data in enumerate(data[1:], start=2):
-                                # Ensure row data exists for the selected index path safely
+                            # Scan rows sequentially starting immediately after the discovered header location
+                            for current_row, row_data in enumerate(data[header_row_num:], start=header_row_num + 1):
                                 if len(row_data) <= col_idx: continue
                                 gsheet_val = str(row_data[col_idx]).strip().upper()
                                 
                                 if gsheet_val in csv_codes:
                                     globally_found_codes.add(gsheet_val)
+                                    guest_name = str(row_data[guest_idx]).strip() if (guest_idx is not None and guest_idx < len(row_data)) else "Unknown"
                                     
-                                    # Perform cross-verification
-                                    if is_csv_mode and price_idx is not None and len(row_data) > price_idx:
+                                    if is_csv_mode and price_idx is not None and price_idx < len(row_data):
                                         csv_price = parsed_file_package["data"][gsheet_val]
                                         gsheet_price = clean_numeric_string(row_data[price_idx])
                                         
-                                        # Skip flagging blank cells as discrepancies
                                         if gsheet_price is None:
-                                            formatting_requests.append((f"A{row_num}:Z{row_num}", green_fmt))
+                                            formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
                                             tab_green_matches += 1
                                         elif gsheet_price == csv_price:
-                                            formatting_requests.append((f"A{row_num}:Z{row_num}", green_fmt))
+                                            formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
                                             tab_green_matches += 1
                                         else:
-                                            formatting_requests.append((f"A{row_num}:Z{row_num}", red_fmt))
+                                            formatting_requests.append((f"A{current_row}:Z{current_row}", red_fmt))
                                             tab_red_mismatches += 1
                                             all_price_mismatches.append({
                                                 "Spreadsheet": sh.title,
                                                 "Tab Name": worksheet.title,
+                                                "Row #": current_row,
+                                                "Guest Name": guest_name,
                                                 "Code": gsheet_val,
                                                 "CSV Price": f"¥{csv_price:,}" if csv_price else "¥0",
                                                 "GSheet Price": f"¥{gsheet_price:,}"
                                             })
                                     else:
-                                        formatting_requests.append((f"A{row_num}:Z{row_num}", green_fmt))
+                                        formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
                                         tab_green_matches += 1
 
                             if formatting_requests:
@@ -171,7 +171,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                                 if tab_green_matches > 0:
                                     st.success(f"✅ Tab '{worksheet.title}': Highlighted {tab_green_matches} accurate matches.")
                                 if tab_red_mismatches > 0:
-                                    st.error(f"❌ Tab '{worksheet.title}': Flagged {tab_red_mismatches} price discrepancies.")
+                                    st.error(f"❌ Tab '{worksheet.title}': Flagged {tab_red_mismatches} price conflicts.")
 
                     except Exception as e:
                         st.error(f"Error accessing sheet {index + 1}: {e}")
@@ -182,13 +182,12 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                 st.divider()
                 if is_csv_mode and all_price_mismatches:
                     st.error("🚨 PRICE DISCREPANCIES DETECTED (Rows Marked RED in Sheets)")
-                    st.markdown("The values in the spreadsheet do not align with your official CSV records:")
+                    st.markdown("Verify the exact sheet locations below using the provided row numbers and guest contexts:")
                     st.dataframe(pd.DataFrame(all_price_mismatches), use_container_width=True)
                 
                 missing_codes = csv_codes - globally_found_codes
                 if missing_codes:
                     st.warning(f"⚠️ {len(missing_codes)} Unmapped Transactions (Missing From Spreadsheets entirely)")
-                    st.markdown("These entries appear on your CSV records but were not located on your property tracking tabs:")
                     missing_df = pd.DataFrame(list(missing_codes), columns=["Missing Reservation Code"])
                     st.dataframe(missing_df, use_container_width=True)
                 
