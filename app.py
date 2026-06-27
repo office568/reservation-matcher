@@ -12,7 +12,9 @@ TARGET_GSHEET_PRICE = "金額"
 CSV_MATCH_HEADERS = ["Confirmation code", "Reference code", "Reference number"]
 CSV_PRICE_HEADERS = ["Gross earnings", "Gross amount", "Amount", "Transaction amount", "Payable amount", "Paid out"]
 
-# Your Complete List of 10 Property Spreadsheet Links
+# IGNORE LIST: Tabs containing these words will be skipped automatically
+IGNORED_TAB_KEYWORDS = ["コピー", "COPY", "ARCHIVE", "古い", "OLD", "バックアップ", "BACKUP", "TEST", "テスト"]
+
 DEFAULT_LINKS = [
     "https://docs.google.com/spreadsheets/d/1iQZTAYk8mq6j_1H4-u8TO4SZZX61HKULtv2lvLrUf6w/edit",
     "https://docs.google.com/spreadsheets/d/1eD0C4rFpHJDye5lDuS3kIkse2g9KV3qsjQW1NHyn1ug/edit",
@@ -39,6 +41,7 @@ def clean_numeric_string(val):
         return None
 
 def extract_data_from_file(uploaded_file):
+    """Maps confirmation codes to their price and listing property attributes."""
     file_data = {"type": "csv", "data": {}}
     if uploaded_file.name.endswith('.csv'):
         try:
@@ -57,22 +60,22 @@ def extract_data_from_file(uploaded_file):
                 code = str(row[code_col]).strip().upper()
                 if pd.isna(row[code_col]) or code == "NAN" or not code or code == "-":
                     continue
-                file_data["data"][code] = clean_numeric_string(row[price_col])
+                
+                # Capture both the price and the property listing title string
+                file_data["data"][code] = {
+                    "price": clean_numeric_string(row[price_col]),
+                    "listing": str(row["Listing"]).strip().upper() if "Listing" in df.columns else ""
+                }
         else:
             file_data["type"] = "text_only"
             file_data["data"] = set(re.findall(r'\b[A-Z0-9]{7,15}\b', df.to_string().upper()))
-    else:
-        file_data["type"] = "text_only"
-        with pdfplumber.open(uploaded_file) as pdf:
-            text = " ".join([page.extract_text() for page in pdf.pages if page.extract_text()])
-        file_data["data"] = set(re.findall(r'\b[A-Z0-9]{7,15}\b', text.upper()))
     return file_data
 
 # --- UI SETUP ---
 st.set_page_config(page_title="Seirai Auto-Matcher", page_icon="🟢", layout="wide")
-st.title("🟢 Seirai Group: Advanced Anti-Leak Reconciliation Agent")
+st.title("🟢 Seirai Group: Multi-Property Reconciliation Agent")
 
-uploaded_file = st.file_uploader("Upload your transaction CSV record", type=["csv", "pdf"])
+uploaded_file = st.file_uploader("Upload your transaction CSV record", type=["csv"])
 
 if st.button("🚀 Run Matching & Price Reconciliation"):
     if not uploaded_file:
@@ -102,14 +105,19 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                         
                     try:
                         sh = client.open_by_url(link)
+                        sheet_title_upper = sh.title.upper()
                         st.subheader(f"📂 Spreadsheet: {sh.title}")
                         
                         for worksheet in sh.worksheets():
-                            time.sleep(1.2) # API Rate Limit protection
+                            time.sleep(1.2) # API Protection
+                            
+                            tab_title_upper = worksheet.title.upper()
+                            if any(keyword in tab_title_upper for keyword in IGNORED_TAB_KEYWORDS):
+                                continue
+                                
                             data = worksheet.get_all_values()
                             if not data or len(data) < 1: continue
                             
-                            # UPGRADE 1: Dynamic Row Scanner to handle structural shifting
                             col_idx = None
                             price_idx = None
                             guest_idx = None
@@ -121,7 +129,6 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                                     col_idx = next(i for i, c in enumerate(row_cells) if c == TARGET_GSHEET_HEADER)
                                     header_row_num = r_num + 1
                                     price_idx = next((i for i, c in enumerate(row_cells) if c == TARGET_GSHEET_PRICE), None)
-                                    # Secondary tracker to extract Guest Name for validation proofing
                                     guest_idx = next((i for i, c in enumerate(row_cells) if any(g in c for g in ["宿泊者", "ゲスト", "名前", "Guest", "Name"])), None)
                                     break
                             
@@ -131,23 +138,36 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                             tab_green_matches = 0
                             tab_red_mismatches = 0
                             
-                            # Scan rows sequentially starting immediately after the discovered header location
                             for current_row, row_data in enumerate(data[header_row_num:], start=header_row_num + 1):
                                 if len(row_data) <= col_idx: continue
                                 gsheet_val = str(row_data[col_idx]).strip().upper()
                                 
                                 if gsheet_val in csv_codes:
+                                    # UPGRADE: Smart Property Protection Shield
+                                    if is_csv_mode:
+                                        csv_item = parsed_file_package["data"][gsheet_val]
+                                        csv_listing = csv_item["listing"]
+                                        
+                                        # Strict cross-property check for sub-letters (A, B, C, D)
+                                        is_mismatch = False
+                                        for letter in ["A", "B", "C", "D"]:
+                                            # If listing specifies '初台A' but the file name is '初台C', block it
+                                            if f"初台{letter}" in csv_listing or f"HATSUDAI {letter}" in csv_listing:
+                                                if f"初台{letter}" not in sheet_title_upper and f"HATSUDAI {letter}" not in sheet_title_upper:
+                                                    is_mismatch = True
+                                                    break
+                                        
+                                        if is_mismatch:
+                                            continue # Ignore ghost row completely on this spreadsheet file
+                                    
                                     globally_found_codes.add(gsheet_val)
                                     guest_name = str(row_data[guest_idx]).strip() if (guest_idx is not None and guest_idx < len(row_data)) else "Unknown"
                                     
                                     if is_csv_mode and price_idx is not None and price_idx < len(row_data):
-                                        csv_price = parsed_file_package["data"][gsheet_val]
+                                        csv_price = parsed_file_package["data"][gsheet_val]["price"]
                                         gsheet_price = clean_numeric_string(row_data[price_idx])
                                         
-                                        if gsheet_price is None:
-                                            formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
-                                            tab_green_matches += 1
-                                        elif gsheet_price == csv_price:
+                                        if gsheet_price is None or gsheet_price == csv_price:
                                             formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
                                             tab_green_matches += 1
                                         else:
@@ -169,7 +189,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                             if formatting_requests:
                                 format_cell_ranges(worksheet, formatting_requests)
                                 if tab_green_matches > 0:
-                                    st.success(f"✅ Tab '{worksheet.title}': Highlighted {tab_green_matches} accurate matches.")
+                                    st.success(f"✅ Tab '{worksheet.title}': Highlighted {tab_green_matches} matches.")
                                 if tab_red_mismatches > 0:
                                     st.error(f"❌ Tab '{worksheet.title}': Flagged {tab_red_mismatches} price conflicts.")
 
@@ -182,7 +202,6 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                 st.divider()
                 if is_csv_mode and all_price_mismatches:
                     st.error("🚨 PRICE DISCREPANCIES DETECTED (Rows Marked RED in Sheets)")
-                    st.markdown("Verify the exact sheet locations below using the provided row numbers and guest contexts:")
                     st.dataframe(pd.DataFrame(all_price_mismatches), use_container_width=True)
                 
                 missing_codes = csv_codes - globally_found_codes
