@@ -10,9 +10,23 @@ import time
 TARGET_GSHEET_HEADER = "予約番号"
 TARGET_GSHEET_PRICE = "金額"
 CSV_MATCH_HEADERS = ["Confirmation code", "Reference code", "Reference number"]
+
+# Dynamic column matching across Airbnb, Booking.com, and Channel Manager formats
 CSV_PRICE_HEADERS = ["Gross earnings", "Gross amount", "Amount", "Transaction amount", "Payable amount", "Paid out"]
 
-# IGNORE LIST: Tabs containing these words will be skipped automatically
+# Structured destination matrix to prevent cross-property data leaks
+PROPERTY_GROUPS = [
+    ["初台A", "HATSUDAI A"],
+    ["初台B", "HATSUDAI B"],
+    ["初台C", "HATSUDAI C"],
+    ["初台D", "HATSUDAI D"],
+    ["雷門", "KAMINARIMON"],
+    ["田原町", "TAWARAMACHI"],
+    ["大久保", "OKUBO"],
+    ["浅草", "ASAKUSA"],
+    ["新宿", "SHINJUKU"]
+]
+
 IGNORED_TAB_KEYWORDS = ["コピー", "COPY", "ARCHIVE", "古い", "OLD", "バックアップ", "BACKUP", "TEST", "テスト"]
 
 DEFAULT_LINKS = [
@@ -41,7 +55,6 @@ def clean_numeric_string(val):
         return None
 
 def extract_data_from_file(uploaded_file):
-    """Maps confirmation codes to their price and listing property attributes."""
     file_data = {"type": "csv", "data": {}}
     if uploaded_file.name.endswith('.csv'):
         try:
@@ -49,22 +62,34 @@ def extract_data_from_file(uploaded_file):
         except:
             df = pd.read_csv(uploaded_file, encoding='cp932')
         
+        # Clean column spaces instantly to handle shifting headers smoothly
+        df.columns = [str(c).strip() for c in df.columns]
+        
         type_col = next((col for col in df.columns if "type" in col.lower()), None)
         code_col = next((col for col in CSV_MATCH_HEADERS if col in df.columns), None)
         price_col = next((col for col in CSV_PRICE_HEADERS if col in df.columns), None)
+        prop_col = next((col for col in ["Listing", "Property name", "Property"] if col in df.columns), None)
         
         if code_col and price_col:
             for _, row in df.iterrows():
-                if type_col and str(row[type_col]).strip() != "Reservation":
+                # Case-insensitive checks for reservation records
+                if type_col and str(row[type_col]).strip().lower() not in ["reservation", "booked", "okay"]:
                     continue
+                
                 code = str(row[code_col]).strip().upper()
                 if pd.isna(row[code_col]) or code == "NAN" or not code or code == "-":
                     continue
                 
-                # Capture both the price and the property listing title string
+                parsed_price = clean_numeric_string(row[price_col])
+                property_info = str(row[prop_col]).strip().upper() if prop_col else ""
+                
+                # BUG FIX 1: If code exists, protect it from being overwritten by later zero/blank adjustment rows
+                if code in file_data["data"] and parsed_price is None:
+                    continue
+                    
                 file_data["data"][code] = {
-                    "price": clean_numeric_string(row[price_col]),
-                    "listing": str(row["Listing"]).strip().upper() if "Listing" in df.columns else ""
+                    "price": parsed_price,
+                    "listing": property_info
                 }
         else:
             file_data["type"] = "text_only"
@@ -88,7 +113,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
             csv_codes = set(parsed_file_package["data"].keys()) if is_csv_mode else parsed_file_package["data"]
 
             if not csv_codes:
-                st.error("No valid transaction fields mapped from layout.")
+                st.error("No valid data rows found in your CSV layout.")
             else:
                 st.success(f"Mapped {len(csv_codes)} active validation targets.")
                 st.divider()
@@ -109,7 +134,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                         st.subheader(f"📂 Spreadsheet: {sh.title}")
                         
                         for worksheet in sh.worksheets():
-                            time.sleep(1.2) # API Protection
+                            time.sleep(1.2) # Active Anti-Throttling Guard
                             
                             tab_title_upper = worksheet.title.upper()
                             if any(keyword in tab_title_upper for keyword in IGNORED_TAB_KEYWORDS):
@@ -143,22 +168,22 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                                 gsheet_val = str(row_data[col_idx]).strip().upper()
                                 
                                 if gsheet_val in csv_codes:
-                                    # UPGRADE: Smart Property Protection Shield
+                                    # BUG FIX 2: Global Property Shield Execution Matrix
                                     if is_csv_mode:
                                         csv_item = parsed_file_package["data"][gsheet_val]
                                         csv_listing = csv_item["listing"]
                                         
-                                        # Strict cross-property check for sub-letters (A, B, C, D)
                                         is_mismatch = False
-                                        for letter in ["A", "B", "C", "D"]:
-                                            # If listing specifies '初台A' but the file name is '初台C', block it
-                                            if f"初台{letter}" in csv_listing or f"HATSUDAI {letter}" in csv_listing:
-                                                if f"初台{letter}" not in sheet_title_upper and f"HATSUDAI {letter}" not in sheet_title_upper:
+                                        for group in PROPERTY_GROUPS:
+                                            # If a distinct location is identified in the CSV...
+                                            if any(keyword in csv_listing for keyword in group):
+                                                # ...it must also match the spreadsheet title name context
+                                                if not any(keyword in sheet_title_upper for keyword in group):
                                                     is_mismatch = True
                                                     break
                                         
                                         if is_mismatch:
-                                            continue # Ignore ghost row completely on this spreadsheet file
+                                            continue # Ignore cross-property ghost leaks completely
                                     
                                     globally_found_codes.add(gsheet_val)
                                     guest_name = str(row_data[guest_idx]).strip() if (guest_idx is not None and guest_idx < len(row_data)) else "Unknown"
@@ -189,7 +214,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                             if formatting_requests:
                                 format_cell_ranges(worksheet, formatting_requests)
                                 if tab_green_matches > 0:
-                                    st.success(f"✅ Tab '{worksheet.title}': Highlighted {tab_green_matches} matches.")
+                                    st.success(f"✅ Tab '{worksheet.title}': Highlighted {tab_green_matches} accurate matches.")
                                 if tab_red_mismatches > 0:
                                     st.error(f"❌ Tab '{worksheet.title}': Flagged {tab_red_mismatches} price conflicts.")
 
