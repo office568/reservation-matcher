@@ -10,22 +10,7 @@ import time
 TARGET_GSHEET_HEADER = "予約番号"
 TARGET_GSHEET_PRICE = "金額"
 CSV_MATCH_HEADERS = ["Confirmation code", "Reference code", "Reference number"]
-
-# Dynamic column matching across Airbnb, Booking.com, and Channel Manager formats
 CSV_PRICE_HEADERS = ["Gross earnings", "Gross amount", "Amount", "Transaction amount", "Payable amount", "Paid out"]
-
-# Structured destination matrix to prevent cross-property data leaks
-PROPERTY_GROUPS = [
-    ["初台A", "HATSUDAI A"],
-    ["初台B", "HATSUDAI B"],
-    ["初台C", "HATSUDAI C"],
-    ["初台D", "HATSUDAI D"],
-    ["雷門", "KAMINARIMON"],
-    ["田原町", "TAWARAMACHI"],
-    ["大久保", "OKUBO"],
-    ["浅草", "ASAKUSA"],
-    ["新宿", "SHINJUKU"]
-]
 
 IGNORED_TAB_KEYWORDS = ["コピー", "COPY", "ARCHIVE", "古い", "OLD", "バックアップ", "BACKUP", "TEST", "テスト"]
 
@@ -55,6 +40,7 @@ def clean_numeric_string(val):
         return None
 
 def extract_data_from_file(uploaded_file):
+    """Step 1: Gather all reservation numbers and revenues from the uploaded file."""
     file_data = {"type": "csv", "data": {}}
     if uploaded_file.name.endswith('.csv'):
         try:
@@ -62,17 +48,14 @@ def extract_data_from_file(uploaded_file):
         except:
             df = pd.read_csv(uploaded_file, encoding='cp932')
         
-        # Clean column spaces instantly to handle shifting headers smoothly
         df.columns = [str(c).strip() for c in df.columns]
         
         type_col = next((col for col in df.columns if "type" in col.lower()), None)
         code_col = next((col for col in CSV_MATCH_HEADERS if col in df.columns), None)
         price_col = next((col for col in CSV_PRICE_HEADERS if col in df.columns), None)
-        prop_col = next((col for col in ["Listing", "Property name", "Property"] if col in df.columns), None)
         
         if code_col and price_col:
             for _, row in df.iterrows():
-                # Case-insensitive checks for reservation records
                 if type_col and str(row[type_col]).strip().lower() not in ["reservation", "booked", "okay"]:
                     continue
                 
@@ -81,16 +64,12 @@ def extract_data_from_file(uploaded_file):
                     continue
                 
                 parsed_price = clean_numeric_string(row[price_col])
-                property_info = str(row[prop_col]).strip().upper() if prop_col else ""
                 
-                # BUG FIX 1: If code exists, protect it from being overwritten by later zero/blank adjustment rows
+                # Protect valid prices from being overwritten by blank/zero adjustment rows
                 if code in file_data["data"] and parsed_price is None:
                     continue
                     
-                file_data["data"][code] = {
-                    "price": parsed_price,
-                    "listing": property_info
-                }
+                file_data["data"][code] = parsed_price
         else:
             file_data["type"] = "text_only"
             file_data["data"] = set(re.findall(r'\b[A-Z0-9]{7,15}\b', df.to_string().upper()))
@@ -98,7 +77,8 @@ def extract_data_from_file(uploaded_file):
 
 # --- UI SETUP ---
 st.set_page_config(page_title="Seirai Auto-Matcher", page_icon="🟢", layout="wide")
-st.title("🟢 Seirai Group: Multi-Property Reconciliation Agent")
+st.title("🟢 Seirai Group: Direct Reservation Matcher")
+st.markdown(f"Scanning **{len(DEFAULT_LINKS)}** spreadsheets sequentially.")
 
 uploaded_file = st.file_uploader("Upload your transaction CSV record", type=["csv"])
 
@@ -113,9 +93,9 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
             csv_codes = set(parsed_file_package["data"].keys()) if is_csv_mode else parsed_file_package["data"]
 
             if not csv_codes:
-                st.error("No valid data rows found in your CSV layout.")
+                st.error("No valid reservation numbers found in your file.")
             else:
-                st.success(f"Mapped {len(csv_codes)} active validation targets.")
+                st.success(f"Successfully gathered {len(csv_codes)} reservation numbers from file.")
                 st.divider()
 
                 globally_found_codes = set()
@@ -125,16 +105,16 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                 green_fmt = cellFormat(backgroundColor=color(0.82, 0.93, 0.85))
                 red_fmt = cellFormat(backgroundColor=color(0.97, 0.84, 0.85))
                 
+                # Step 2: Look through all spreadsheets, one sheet at a time
                 for index, link in enumerate(DEFAULT_LINKS):
                     if "docs.google.com" not in link: continue
                         
                     try:
                         sh = client.open_by_url(link)
-                        sheet_title_upper = sh.title.upper()
                         st.subheader(f"📂 Spreadsheet: {sh.title}")
                         
                         for worksheet in sh.worksheets():
-                            time.sleep(1.2) # Active Anti-Throttling Guard
+                            time.sleep(1.2) # API Rate Limit protection
                             
                             tab_title_upper = worksheet.title.upper()
                             if any(keyword in tab_title_upper for keyword in IGNORED_TAB_KEYWORDS):
@@ -167,31 +147,17 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                                 if len(row_data) <= col_idx: continue
                                 gsheet_val = str(row_data[col_idx]).strip().upper()
                                 
+                                # Step 3: When found a match based on reservation number...
                                 if gsheet_val in csv_codes:
-                                    # BUG FIX 2: Global Property Shield Execution Matrix
-                                    if is_csv_mode:
-                                        csv_item = parsed_file_package["data"][gsheet_val]
-                                        csv_listing = csv_item["listing"]
-                                        
-                                        is_mismatch = False
-                                        for group in PROPERTY_GROUPS:
-                                            # If a distinct location is identified in the CSV...
-                                            if any(keyword in csv_listing for keyword in group):
-                                                # ...it must also match the spreadsheet title name context
-                                                if not any(keyword in sheet_title_upper for keyword in group):
-                                                    is_mismatch = True
-                                                    break
-                                        
-                                        if is_mismatch:
-                                            continue # Ignore cross-property ghost leaks completely
-                                    
                                     globally_found_codes.add(gsheet_val)
                                     guest_name = str(row_data[guest_idx]).strip() if (guest_idx is not None and guest_idx < len(row_data)) else "Unknown"
                                     
+                                    # Step 4: Check if the revenue is correct
                                     if is_csv_mode and price_idx is not None and price_idx < len(row_data):
-                                        csv_price = parsed_file_package["data"][gsheet_val]["price"]
+                                        csv_price = parsed_file_package["data"][gsheet_val]
                                         gsheet_price = clean_numeric_string(row_data[price_idx])
                                         
+                                        # If empty string or unentered, let it default green instead of forcing an error flag
                                         if gsheet_price is None or gsheet_price == csv_price:
                                             formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
                                             tab_green_matches += 1
@@ -205,7 +171,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                                                 "Guest Name": guest_name,
                                                 "Code": gsheet_val,
                                                 "CSV Price": f"¥{csv_price:,}" if csv_price else "¥0",
-                                                "GSheet Price": f"¥{gsheet_price:,}"
+                                                "GSheet Price": f"¥{gsheet_price:,}" if gsheet_price else "¥0"
                                             })
                                     else:
                                         formatting_requests.append((f"A{current_row}:Z{current_row}", green_fmt))
@@ -214,7 +180,7 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                             if formatting_requests:
                                 format_cell_ranges(worksheet, formatting_requests)
                                 if tab_green_matches > 0:
-                                    st.success(f"✅ Tab '{worksheet.title}': Highlighted {tab_green_matches} accurate matches.")
+                                    st.success(f"✅ Tab '{worksheet.title}': Found and colored {tab_green_matches} rows.")
                                 if tab_red_mismatches > 0:
                                     st.error(f"❌ Tab '{worksheet.title}': Flagged {tab_red_mismatches} price conflicts.")
 
@@ -226,18 +192,19 @@ if st.button("🚀 Run Matching & Price Reconciliation"):
                 # --- SUMMARY REPORT LOGS ---
                 st.divider()
                 if is_csv_mode and all_price_mismatches:
-                    st.error("🚨 PRICE DISCREPANCIES DETECTED (Rows Marked RED in Sheets)")
+                    st.error("🚨 PRICE DISCREPANCIES DETECTED (Reservation code matched, but revenue amount did not)")
                     st.dataframe(pd.DataFrame(all_price_mismatches), use_container_width=True)
                 
+                # Final check: For reservation numbers that can't find a match, put it in the missing section
                 missing_codes = csv_codes - globally_found_codes
                 if missing_codes:
-                    st.warning(f"⚠️ {len(missing_codes)} Unmapped Transactions (Missing From Spreadsheets entirely)")
+                    st.warning(f"⚠️ {len(missing_codes)} Reservations Completely Missing From Spreadsheets")
                     missing_df = pd.DataFrame(list(missing_codes), columns=["Missing Reservation Code"])
                     st.dataframe(missing_df, use_container_width=True)
                 
                 if not all_price_mismatches and not missing_codes:
                     st.balloons()
-                    st.success("Reconciliation successful! Complete alignment achieved with zero financial or data leaks.")
+                    st.success("Reconciliation successful! Perfect 100% match achieved across all records.")
 
         except Exception as auth_e:
             st.error(f"Authentication Failure: {auth_e}")
